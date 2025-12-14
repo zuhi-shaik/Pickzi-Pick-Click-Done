@@ -1,0 +1,80 @@
+{
+  "info": {
+    "name": "Pickzi Address API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Collection for testing Pickzi user address endpoints"
+  },
+  "item": [
+    {
+      "name": "Get My Address",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/users/me/address",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "users",
+            "me",
+            "address"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Save My Address",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"fullName\": \"Jane Doe\",\n  \"phone\": \"1234567890\",\n  \"line1\": \"221B Baker Street\",\n  \"line2\": \"Apartment 5\",\n  \"city\": \"London\",\n  \"state\": \"Greater London\",\n  \"postalCode\": \"NW16XE\",\n  \"country\": \"UK\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/users/me/address",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "users",
+            "me",
+            "address"
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ]
+}

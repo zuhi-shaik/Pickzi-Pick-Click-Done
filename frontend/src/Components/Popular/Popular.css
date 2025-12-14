@@ -1,0 +1,32 @@
+.popular{
+    width: min(100%, 1180px);
+    margin: 0 auto;
+    padding: 60px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+}
+
+.popular-heading {
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.popular-heading h1{
+    font-size: clamp(32px, 5vw, 46px);
+    font-weight: 700;
+    color: var(--brand-text);
+}
+
+.popular-heading p {
+    color: var(--brand-muted);
+}
+
+.popular-item{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 28px;
+    margin-top: 12px;
+}

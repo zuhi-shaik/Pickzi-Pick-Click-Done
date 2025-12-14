@@ -1,0 +1,31 @@
+{
+  "info": {
+    "name": "Pickzi Register API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Register User",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"John Doe\",\n  \"username\": \"johndoe\",\n  \"email\": \"john.doe@example.com\",\n  \"mobile\": \"9876543210\",\n  \"password\": \"SecurePass123\",\n  \"confirmPassword\": \"SecurePass123\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/users/register",
+          "host": ["{{base_url}}"],
+          "path": ["api", "users", "register"]
+        },
+        "description": "Creates a new user and returns user fields (id, name, username, email, mobile) plus JWT token."
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:5000", "type": "string" }
+  ]
+}

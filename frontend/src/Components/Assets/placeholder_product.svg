@@ -1,0 +1,15 @@
+<svg width="480" height="600" viewBox="0 0 480 600" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="50%" stop-color="#e0e7ff" />
+      <stop offset="100%" stop-color="#c7d2fe" />
+    </linearGradient>
+  </defs>
+  <rect width="480" height="600" rx="32" fill="url(#grad)" />
+  <g fill="#1f2937" fill-opacity="0.38">
+    <path d="M240 160c-44.18 0-80 35.82-80 80s35.82 80 80 80 80-35.82 80-80-35.82-80-80-80zm0 32c26.51 0 48 21.49 48 48s-21.49 48-48 48-48-21.49-48-48 21.49-48 48-48z"/>
+    <path d="M140 420c0-55.23 44.77-100 100-100h0c55.23 0 100 44.77 100 100v28c0 8.84-7.16 16-16 16H156c-8.84 0-16-7.16-16-16v-28zm32 4v24h136v-24c0-37.5-30.5-68-68-68h0c-37.5 0-68 30.5-68 68z"/>
+  </g>
+  <text x="50%" y="520" text-anchor="middle" font-family="'Segoe UI', sans-serif" font-size="32" fill="#1f2937" fill-opacity="0.45">Image coming soon</text>
+</svg>

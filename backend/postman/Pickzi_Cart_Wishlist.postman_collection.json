@@ -1,0 +1,334 @@
+{
+  "info": {
+    "_postman_id": "f1a2b3c4-d5e6-47a8-9b01-23456789abcd",
+    "name": "Pickzi Cart & Wishlist API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"name\": \"John Doe\",\n    \"username\": \"johndoe\",\n    \"email\": \"john@example.com\",\n    \"mobile\": \"9876543210\",\n    \"password\": \"SecurePass123\",\n    \"confirmPassword\": \"SecurePass123\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/users/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "register"]
+            },
+            "description": "Register a new user account."
+          },
+          "response": []
+        },
+        {
+          "name": "Login User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"username\": \"johndoe\",\n    \"password\": \"SecurePass123\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/users/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "login"]
+            },
+            "description": "Authenticate user and retrieve JWT token."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Cart",
+      "item": [
+        {
+          "name": "Get Cart",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/users/me/cart",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me", "cart"]
+            },
+            "description": "Retrieve current user's saved cart items."
+          },
+          "response": []
+        },
+        {
+          "name": "Add or Update Cart Item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"productId\": \"<PRODUCT_OBJECT_ID>\",\n    \"quantity\": 2,\n    \"size\": \"M\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/users/me/cart",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me", "cart"]
+            },
+            "description": "Add a product to the cart or overwrite its quantity. Fields: productId (ObjectId), quantity (>0), size (required)."
+          },
+          "response": []
+        },
+        {
+          "name": "Increment Cart Quantity",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"productId\": \"<PRODUCT_OBJECT_ID>\",\n    \"delta\": 1,\n    \"size\": \"M\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/users/me/cart",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me", "cart"]
+            },
+            "description": "Adjust quantity of a cart item. Use negative delta to decrease. Fields: productId (ObjectId), delta (number), size (required)."
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Cart Item",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/users/me/cart/{{productId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me", "cart", "{{productId}}"],
+              "variable": [
+                {
+                  "key": "productId",
+                  "value": "<PRODUCT_OBJECT_ID>"
+                }
+              ]
+            },
+            "description": "Remove a single product from the cart. Optionally include query param size to remove only that size variant (e.g. ?size=M)."
+          },
+          "response": []
+        },
+        {
+          "name": "Clear Cart",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/users/me/cart",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me", "cart"]
+            },
+            "description": "Remove all products from the cart."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Wishlist",
+      "item": [
+        {
+          "name": "Get Wishlist",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/users/me/wishlist",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me", "wishlist"]
+            },
+            "description": "Retrieve current user's wishlist."
+          },
+          "response": []
+        },
+        {
+          "name": "Add Wishlist Item",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"productId\": \"<PRODUCT_OBJECT_ID>\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/users/me/wishlist",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me", "wishlist"]
+            },
+            "description": "Add a product to the wishlist if not already present."
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Wishlist Item",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/users/me/wishlist/{{productId}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me", "wishlist", "{{productId}}"],
+              "variable": [
+                {
+                  "key": "productId",
+                  "value": "<PRODUCT_OBJECT_ID>"
+                }
+              ]
+            },
+            "description": "Remove a product from the wishlist."
+          },
+          "response": []
+        },
+        {
+          "name": "Clear Wishlist",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/users/me/wishlist",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me", "wishlist"]
+            },
+            "description": "Remove all products from the wishlist."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Products",
+      "item": [
+        {
+          "name": "List Products",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/products",
+              "host": ["{{base_url}}"],
+              "path": ["api", "products"]
+            },
+            "description": "List all products. Optional: ?category=women|men|kids"
+          },
+          "response": []
+        },
+        {
+          "name": "Seed Dev (3 items)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/products/seed/dev",
+              "host": ["{{base_url}}"],
+              "path": ["api", "products", "seed", "dev"]
+            },
+            "description": "Dev-only: clears and seeds 3 sample products. Disabled in production."
+          },
+          "response": []
+        },
+        {
+          "name": "Seed All (website catalog)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/products/seed/all",
+              "host": ["{{base_url}}"],
+              "path": ["api", "products", "seed", "all"]
+            },
+            "description": "Dev-only: clears and seeds full website catalog (women/men/kids). Disabled in production."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000"
+    },
+    {
+      "key": "token",
+      "value": "<JWT_TOKEN>"
+    }
+  ]
+}

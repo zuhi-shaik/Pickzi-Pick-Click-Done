@@ -1,0 +1,213 @@
+{
+  "info": {
+    "_postman_id": "39c9f9b8-c2cb-4f6f-a5a8-4b7a3cdd8ab5",
+    "name": "Pickzi Products API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Get Products",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/products",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "products"
+          ],
+          "query": [
+            {
+              "key": "category",
+              "value": "women",
+              "description": "Optional filter (men, women, kids)"
+            }
+          ]
+        },
+        "description": "List all products or filter by category."
+      },
+      "response": []
+    },
+    {
+      "name": "Get Product By Id",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/products/{{productId}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "products",
+            "{{productId}}"
+          ],
+          "variable": [
+            {
+              "key": "productId",
+              "value": "<PRODUCT_OBJECT_ID>",
+              "description": "MongoDB _id of the product"
+            }
+          ]
+        },
+        "description": "Fetch details for a single product."
+      },
+      "response": []
+    },
+    {
+      "name": "Create Product",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Classic Tee\",\n  \"description\": \"Soft cotton tee\",\n  \"new_price\": 999,\n  \"old_price\": 1299,\n  \"category\": \"men\",\n  \"image\": \"https://example.com/products/classic-tee.jpg\",\n  \"sizes\": [\"S\", \"M\", \"L\"],\n  \"colors\": [\"black\", \"white\"],\n  \"rating\": 4.5,\n  \"stock\": 120\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/products",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "products"
+          ]
+        },
+        "description": "Create a new product (requires auth token)."
+      },
+      "response": []
+    },
+    {
+      "name": "Update Product",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Classic Tee (Updated)\",\n  \"description\": \"Soft cotton tee with new color\",\n  \"new_price\": 1099,\n  \"old_price\": 1399,\n  \"category\": \"men\",\n  \"image\": \"https://example.com/products/classic-tee-new.jpg\",\n  \"sizes\": [\"S\", \"M\", \"L\", \"XL\"],\n  \"colors\": [\"black\", \"white\", \"navy\"],\n  \"rating\": 4.7,\n  \"stock\": 110\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/products/{{productId}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "products",
+            "{{productId}}"
+          ],
+          "variable": [
+            {
+              "key": "productId",
+              "value": "<PRODUCT_OBJECT_ID>",
+              "description": "MongoDB _id of the product"
+            }
+          ]
+        },
+        "description": "Update an existing product (requires auth token)."
+      },
+      "response": []
+    },
+    {
+      "name": "Delete Product",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/products/{{productId}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "products",
+            "{{productId}}"
+          ],
+          "variable": [
+            {
+              "key": "productId",
+              "value": "<PRODUCT_OBJECT_ID>",
+              "description": "MongoDB _id of the product"
+            }
+          ]
+        },
+        "description": "Delete a product (requires auth token)."
+      },
+      "response": []
+    },
+    {
+      "name": "Seed Products (Dev Only)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/products/seed/dev",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "products",
+            "seed",
+            "dev"
+          ]
+        },
+        "description": "DEV ONLY: reset and seed sample products. Do not run in production."
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000"
+    },
+    {
+      "key": "token",
+      "value": "<JWT_TOKEN>"
+    }
+  ]
+}

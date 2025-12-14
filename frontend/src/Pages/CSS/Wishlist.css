@@ -1,0 +1,122 @@
+.wishlist-page {
+  max-width: 1100px;
+  margin: 40px auto;
+  padding: 0 16px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.wishlist-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.wishlist-header h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+.wishlist-header p {
+  margin: 6px 0 0;
+  color: #555;
+}
+
+.wishlist-count {
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(236,72,153,0.12), rgba(99,102,241,0.12));
+  color: #4c1d95;
+  font-weight: 600;
+}
+
+.wishlist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 24px;
+}
+
+.wishlist-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+
+.wishlist-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.wishlist-actions button {
+  flex: 1 1 120px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.wishlist-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.wishlist-move {
+  border: none;
+  background: linear-gradient(135deg, #ec4899, #6366f1);
+  color: #fff;
+}
+
+.wishlist-remove {
+  border: 1px solid rgba(17, 24, 39, 0.12);
+  background: #f8fafc;
+  color: #111827;
+}
+
+.wishlist-actions button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(236, 72, 153, 0.2);
+}
+
+.wishlist-empty {
+  min-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 16px;
+}
+
+.wishlist-empty-card {
+  max-width: 420px;
+  text-align: center;
+  background: #fff;
+  padding: 32px;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+}
+
+.wishlist-empty-card img {
+  width: 160px;
+  height: auto;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 640px) {
+  .wishlist-header {
+    align-items: flex-start;
+  }
+
+  .wishlist-count {
+    align-self: flex-start;
+  }
+}
