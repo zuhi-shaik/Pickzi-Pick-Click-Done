@@ -71,6 +71,35 @@ const buildPickziOtpEmail = ({ name, otp, expiresInMinutes = 5 }) => {
   return { html, text };
 };
 
+const sendVerificationEmailIfConfigured = async (user, otp) => {
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const sanitizedSmtpUser = typeof smtpUser === 'string' ? smtpUser.trim() : smtpUser;
+  const sanitizedSmtpPass = typeof smtpPass === 'string'
+    ? smtpPass.replace(/\s+/g, '').trim()
+    : smtpPass;
+  const smtpFrom = process.env.SMTP_FROM || smtpUser;
+
+  if (smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password' && user.email) {
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: { user: sanitizedSmtpUser, pass: sanitizedSmtpPass }
+    });
+    const { html, text } = buildPickziOtpEmail({ name: user.name, otp, expiresInMinutes: 10 });
+    await transporter.sendMail({
+      from: smtpFrom,
+      to: user.email,
+      subject: 'Verify your Pickzi account',
+      text,
+      html
+    });
+  }
+};
+
 // POST /api/users/register
 router.post('/register', [
   // Input validation
@@ -82,7 +111,13 @@ router.post('/register', [
     .matches(/^[a-zA-Z0-9_]+$/).withMessage('Username can only contain letters, numbers, and underscores'),
   body('email')
     .isEmail().withMessage('Please enter a valid email')
-    .normalizeEmail(),
+    .normalizeEmail({
+      gmail_remove_dots: false,
+      gmail_remove_subaddress: false,
+      outlookdotcom_remove_subaddress: false,
+      yahoo_remove_subaddress: false,
+      icloud_remove_subaddress: false
+    }),
   body('mobile')
     .trim()
     .notEmpty().withMessage('Mobile number is required')
@@ -113,79 +148,124 @@ router.post('/register', [
     }
 
     const { name, username, email, mobile, password } = req.body;
+    console.log(`[DEBUG] Incoming email (raw from body): ${email}`);
+    const trimmedName = name.trim();
+    const normalizedUsername = username.toLowerCase().trim();
+    const normalizedEmail = email.toLowerCase().trim();
+    const trimmedMobile = mobile.trim();
 
-    // Check if email or username already exists
-    const existingUser = await User.findOne({
-      $or: [
-        { email: email.toLowerCase() },
-        { username: username.toLowerCase() }
-      ]
-    });
+    // Check if email already exists
+    console.log(`[DEBUG] Checking email: ${normalizedEmail}`);
+    const existingEmailUser = await User.findOne({ email: normalizedEmail }).select('+password +emailVerifyHash +emailVerifyExpiresAt +emailVerifyAttempts');
 
-    if (existingUser) {
-      if (existingUser.email === email.toLowerCase()) {
+    if (existingEmailUser) {
+      console.log(`[DEBUG] Found existing user:`, {
+        id: existingEmailUser._id,
+        email: existingEmailUser.email,
+        emailVerified: existingEmailUser.emailVerified,
+        hasEmailVerifyHash: !!existingEmailUser.emailVerifyHash,
+        emailVerifyExpiresAt: existingEmailUser.emailVerifyExpiresAt
+      });
+      
+      if (!existingEmailUser.emailVerified) {
+        // Check if the verification has expired (older than 24 hours)
+        const isExpired = !existingEmailUser.emailVerifyExpiresAt || existingEmailUser.emailVerifyExpiresAt < new Date();
+        
+        if (isExpired) {
+          console.log(`[DEBUG] Unverified account expired, allowing fresh registration`);
+          // Delete the expired unverified account and allow fresh registration
+          await User.deleteOne({ _id: existingEmailUser._id });
+        } else {
+          console.log(`[DEBUG] Unverified account exists and is still valid, updating and resending OTP`);
+          // Account exists but email not verified -> Update user details and resend OTP
+          existingEmailUser.name = trimmedName;
+          existingEmailUser.username = normalizedUsername;
+          existingEmailUser.mobile = trimmedMobile;
+          existingEmailUser.password = password;
+
+          const otpSource = process.env.DEFAULT_OTP;
+          const otp = otpSource !== undefined
+            ? otpSource.toString().padStart(4, '0')
+            : Math.floor(1000 + Math.random() * 9000).toString();
+          const emailVerifyHash = await bcrypt.hash(otp, 10);
+          const emailVerifyExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+          existingEmailUser.emailVerifyHash = emailVerifyHash;
+          existingEmailUser.emailVerifyExpiresAt = emailVerifyExpiresAt;
+          existingEmailUser.emailVerifyAttempts = 0;
+
+          await existingEmailUser.save();
+          // Send email asynchronously to avoid blocking the response
+          sendVerificationEmailIfConfigured(existingEmailUser, otp).catch(err => console.error('Error sending verification email:', err));
+
+          return res.status(200).json({
+            message: 'Account already exists but is not verified. We sent a new verification code to your email.',
+            needsEmailVerification: true,
+            user: {
+              id: existingEmailUser._id,
+              name: existingEmailUser.name,
+              username: existingEmailUser.username,
+              email: existingEmailUser.email
+            }
+          });
+        }
+      } else {
+        console.log(`[DEBUG] Email verified and exists -> duplicate`);
+        // Email verified and exists -> duplicate
         return res.status(409).json({
           success: false,
           message: 'Email already in use. Please use a different email or login instead.'
         });
-      } else {
-        return res.status(409).json({
-          success: false,
-          message: 'Username already taken. Please choose a different username.'
-        });
       }
+    } else {
+      console.log(`[DEBUG] No existing user found with email: ${normalizedEmail}`);
+    }
+
+    // Check if username already exists
+    const existingUsernameUser = await User.findOne({ username: normalizedUsername });
+    if (existingUsernameUser) {
+      return res.status(409).json({
+        success: false,
+        message: 'Username already taken. Please choose a different username.'
+      });
     }
 
     // Create new user (password will be hashed by the pre-save hook). Mark as unverified.
+    console.time('User.create');
     const user = await User.create({
-      name: name.trim(),
-      username: username.toLowerCase().trim(),
-      email: email.toLowerCase().trim(),
-      mobile: mobile.trim(),
+      name: trimmedName,
+      username: normalizedUsername,
+      email: normalizedEmail,
+      mobile: trimmedMobile,
       password, // Will be hashed by pre-save hook
       emailVerified: false
     });
+    console.timeEnd('User.create');
 
     // Generate an email verification OTP
     const otpSource = process.env.DEFAULT_OTP;
     const otp = otpSource !== undefined
       ? otpSource.toString().padStart(4, '0')
       : Math.floor(1000 + Math.random() * 9000).toString();
+
+    console.time('otpHash');
     const emailVerifyHash = await bcrypt.hash(otp, 10);
+    console.timeEnd('otpHash');
+
     const emailVerifyExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     user.emailVerifyHash = emailVerifyHash;
     user.emailVerifyExpiresAt = emailVerifyExpiresAt;
     user.emailVerifyAttempts = 0;
+
+    console.time('user.save');
     await user.save();
+    console.timeEnd('user.save');
 
-    // Send verification OTP via email if SMTP configured
-    const smtpHost = process.env.SMTP_HOST;
-    const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
-    const smtpUser = process.env.SMTP_USER;
-    const smtpPass = process.env.SMTP_PASS;
-    const sanitizedSmtpUser = typeof smtpUser === 'string' ? smtpUser.trim() : smtpUser;
-    const sanitizedSmtpPass = typeof smtpPass === 'string'
-      ? smtpPass.replace(/\s+/g, '').trim()
-      : smtpPass;
-    const smtpFrom = process.env.SMTP_FROM || smtpUser;
-
-    if (smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password' && user.email) {
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: { user: sanitizedSmtpUser, pass: sanitizedSmtpPass }
-      });
-      const { html, text } = buildPickziOtpEmail({ name: user.name, otp, expiresInMinutes: 10 });
-      await transporter.sendMail({
-        from: smtpFrom,
-        to: user.email,
-        subject: 'Verify your Pickzi account',
-        text,
-        html
-      });
-    }
+    // Send verification OTP via email asynchronously
+    console.log('Starting async email send');
+    sendVerificationEmailIfConfigured(user, otp).catch(err => console.error('Error sending verification email:', err));
+    console.log('Async email send called');
 
     return res.status(201).json({
       message: 'User registered successfully. Please verify your email with the OTP sent.',
@@ -362,14 +442,14 @@ router.post('/forgot-password', async (req, res) => {
         auth: { user: sanitizedSmtpUser, pass: sanitizedSmtpPass }
       });
       const { html, text } = buildPickziOtpEmail({ name: user.name, otp });
-      await transporter.sendMail({
+      transporter.sendMail({
         from: smtpFrom,
         to: user.email,
         subject: 'Pickzi password reset code',
         text,
         html
-      });
-      // Email sent successfully; never expose OTP in response
+      }).catch(err => console.error('Error sending password reset email:', err));
+      // Email sent successfully (initiated); never expose OTP in response
       return res.status(200).json({ message: 'OTP sent to registered email' });
     }
 

@@ -1,0 +1,1149 @@
+From bd803572f5ea694e74d7bbf38a82e2f77c9e6211 Mon Sep 17 00:00:00 2001
+From: zuhi-shaik <sahirazuhi@gmail.com>
+Date: Thu, 25 Dec 2025 12:22:35 +0530
+Subject: [PATCH] Fix email normalization, handle unverified/expired, add DEBUG
+ logs in /register
+
+---
+ backend/check_email.js             |  67 +++++++
+ backend/routes/userRoutes.js       | 182 +++++++++++++------
+ backend/scripts/bench_bcrypt.js    |  17 ++
+ backend/scripts/measure_latency.js |  35 ++++
+ backend/test_fix.js                |  79 ++++++++
+ frontend/src/Pages/Register.jsx    |  88 +++++++--
+ frontend/src/api/client.js         |  51 +++++-
+ frontend/src/styles/Auth.css       | 282 ++++++++++++++++-------------
+ 8 files changed, 604 insertions(+), 197 deletions(-)
+ create mode 100644 backend/check_email.js
+ create mode 100644 backend/scripts/bench_bcrypt.js
+ create mode 100644 backend/scripts/measure_latency.js
+ create mode 100644 backend/test_fix.js
+
+diff --git a/backend/check_email.js b/backend/check_email.js
+new file mode 100644
+index 0000000..17f41d3
+--- /dev/null
++++ b/backend/check_email.js
+@@ -0,0 +1,67 @@
++const mongoose = require('mongoose');
++const User = require('./models/User');
++
++async function checkEmail() {
++  try {
++    await mongoose.connect('mongodb://localhost:27017/pickzi', { 
++      useNewUrlParser: true, 
++      useUnifiedTopology: true 
++    });
++    console.log('Connected to MongoDB');
++    
++    // Check for existing users with the problematic email
++    const email = 'thisisfineee20@gmail.com';
++    const normalizedEmail = email.toLowerCase().trim();
++    
++    console.log('\n=== Checking for email:', normalizedEmail, '===');
++    
++    // Method 1: Exact match
++    const exactUsers = await User.find({ email: normalizedEmail });
++    console.log('Exact match users found:', exactUsers.length);
++    
++    // Method 2: Case-insensitive search
++    const caseInsensitiveUsers = await User.find({ 
++      email: { $regex: new RegExp(`^${normalizedEmail}$`, 'i') } 
++    });
++    console.log('Case-insensitive users found:', caseInsensitiveUsers.length);
++    
++    // Method 3: Contains search
++    const containsUsers = await User.find({ 
++      email: { $regex: normalizedEmail, $options: 'i' } 
++    });
++    console.log('Contains users found:', containsUsers.length);
++    
++    // Check all users in database
++    console.log('\n=== All users in database ===');
++    const allUsers = await User.find({}, 'email username emailVerified');
++    console.log('Total users in database:', allUsers.length);
++    
++    allUsers.forEach((user, index) => {
++      console.log(`${index + 1}. Email: "${user.email}", Username: ${user.username}, Verified: ${user.emailVerified}`);
++    });
++    
++    // Test the exact query from the registration route
++    console.log('\n=== Testing exact registration query ===');
++    const existingEmailUser = await User.findOne({ email: normalizedEmail })
++      .select('+password +emailVerifyHash +emailVerifyExpiresAt +emailVerifyAttempts');
++    
++    console.log('Registration query result:', existingEmailUser ? 'FOUND' : 'NOT FOUND');
++    if (existingEmailUser) {
++      console.log('Found user details:', {
++        id: existingEmailUser._id,
++        email: existingEmailUser.email,
++        username: existingEmailUser.username,
++        emailVerified: existingEmailUser.emailVerified,
++        hasPassword: !!existingEmailUser.password,
++        hasEmailVerifyHash: !!existingEmailUser.emailVerifyHash
++      });
++    }
++    
++  } catch (error) {
++    console.error('Error:', error);
++  } finally {
++    await mongoose.connection.close();
++  }
++}
++
++checkEmail();
+diff --git a/backend/routes/userRoutes.js b/backend/routes/userRoutes.js
+index a754803..d7b554a 100644
+--- a/backend/routes/userRoutes.js
++++ b/backend/routes/userRoutes.js
+@@ -71,6 +71,35 @@ const buildPickziOtpEmail = ({ name, otp, expiresInMinutes = 5 }) => {
+   return { html, text };
+ };
+ 
++const sendVerificationEmailIfConfigured = async (user, otp) => {
++  const smtpHost = process.env.SMTP_HOST;
++  const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
++  const smtpUser = process.env.SMTP_USER;
++  const smtpPass = process.env.SMTP_PASS;
++  const sanitizedSmtpUser = typeof smtpUser === 'string' ? smtpUser.trim() : smtpUser;
++  const sanitizedSmtpPass = typeof smtpPass === 'string'
++    ? smtpPass.replace(/\s+/g, '').trim()
++    : smtpPass;
++  const smtpFrom = process.env.SMTP_FROM || smtpUser;
++
++  if (smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password' && user.email) {
++    const transporter = nodemailer.createTransport({
++      host: smtpHost,
++      port: smtpPort,
++      secure: smtpPort === 465,
++      auth: { user: sanitizedSmtpUser, pass: sanitizedSmtpPass }
++    });
++    const { html, text } = buildPickziOtpEmail({ name: user.name, otp, expiresInMinutes: 10 });
++    await transporter.sendMail({
++      from: smtpFrom,
++      to: user.email,
++      subject: 'Verify your Pickzi account',
++      text,
++      html
++    });
++  }
++};
++
+ // POST /api/users/register
+ router.post('/register', [
+   // Input validation
+@@ -82,7 +111,13 @@ router.post('/register', [
+     .matches(/^[a-zA-Z0-9_]+$/).withMessage('Username can only contain letters, numbers, and underscores'),
+   body('email')
+     .isEmail().withMessage('Please enter a valid email')
+-    .normalizeEmail(),
++    .normalizeEmail({
++      gmail_remove_dots: false,
++      gmail_remove_subaddress: false,
++      outlookdotcom_remove_subaddress: false,
++      yahoo_remove_subaddress: false,
++      icloud_remove_subaddress: false
++    }),
+   body('mobile')
+     .trim()
+     .notEmpty().withMessage('Mobile number is required')
+@@ -113,79 +148,124 @@ router.post('/register', [
+     }
+ 
+     const { name, username, email, mobile, password } = req.body;
+-
+-    // Check if email or username already exists
+-    const existingUser = await User.findOne({
+-      $or: [
+-        { email: email.toLowerCase() },
+-        { username: username.toLowerCase() }
+-      ]
+-    });
+-
+-    if (existingUser) {
+-      if (existingUser.email === email.toLowerCase()) {
+-        return res.status(409).json({
+-          success: false,
+-          message: 'Email already in use. Please use a different email or login instead.'
+-        });
++    console.log(`[DEBUG] Incoming email (raw from body): ${email}`);
++    const trimmedName = name.trim();
++    const normalizedUsername = username.toLowerCase().trim();
++    const normalizedEmail = email.toLowerCase().trim();
++    const trimmedMobile = mobile.trim();
++
++    // Check if email already exists
++    console.log(`[DEBUG] Checking email: ${normalizedEmail}`);
++    const existingEmailUser = await User.findOne({ email: normalizedEmail }).select('+password +emailVerifyHash +emailVerifyExpiresAt +emailVerifyAttempts');
++
++    if (existingEmailUser) {
++      console.log(`[DEBUG] Found existing user:`, {
++        id: existingEmailUser._id,
++        email: existingEmailUser.email,
++        emailVerified: existingEmailUser.emailVerified,
++        hasEmailVerifyHash: !!existingEmailUser.emailVerifyHash,
++        emailVerifyExpiresAt: existingEmailUser.emailVerifyExpiresAt
++      });
++      
++      if (!existingEmailUser.emailVerified) {
++        // Check if the verification has expired (older than 24 hours)
++        const isExpired = !existingEmailUser.emailVerifyExpiresAt || existingEmailUser.emailVerifyExpiresAt < new Date();
++        
++        if (isExpired) {
++          console.log(`[DEBUG] Unverified account expired, allowing fresh registration`);
++          // Delete the expired unverified account and allow fresh registration
++          await User.deleteOne({ _id: existingEmailUser._id });
++        } else {
++          console.log(`[DEBUG] Unverified account exists and is still valid, updating and resending OTP`);
++          // Account exists but email not verified -> Update user details and resend OTP
++          existingEmailUser.name = trimmedName;
++          existingEmailUser.username = normalizedUsername;
++          existingEmailUser.mobile = trimmedMobile;
++          existingEmailUser.password = password;
++
++          const otpSource = process.env.DEFAULT_OTP;
++          const otp = otpSource !== undefined
++            ? otpSource.toString().padStart(4, '0')
++            : Math.floor(1000 + Math.random() * 9000).toString();
++          const emailVerifyHash = await bcrypt.hash(otp, 10);
++          const emailVerifyExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
++
++          existingEmailUser.emailVerifyHash = emailVerifyHash;
++          existingEmailUser.emailVerifyExpiresAt = emailVerifyExpiresAt;
++          existingEmailUser.emailVerifyAttempts = 0;
++
++          await existingEmailUser.save();
++          // Send email asynchronously to avoid blocking the response
++          sendVerificationEmailIfConfigured(existingEmailUser, otp).catch(err => console.error('Error sending verification email:', err));
++
++          return res.status(200).json({
++            message: 'Account already exists but is not verified. We sent a new verification code to your email.',
++            needsEmailVerification: true,
++            user: {
++              id: existingEmailUser._id,
++              name: existingEmailUser.name,
++              username: existingEmailUser.username,
++              email: existingEmailUser.email
++            }
++          });
++        }
+       } else {
++        console.log(`[DEBUG] Email verified and exists -> duplicate`);
++        // Email verified and exists -> duplicate
+         return res.status(409).json({
+           success: false,
+-          message: 'Username already taken. Please choose a different username.'
++          message: 'Email already in use. Please use a different email or login instead.'
+         });
+       }
++    } else {
++      console.log(`[DEBUG] No existing user found with email: ${normalizedEmail}`);
++    }
++
++    // Check if username already exists
++    const existingUsernameUser = await User.findOne({ username: normalizedUsername });
++    if (existingUsernameUser) {
++      return res.status(409).json({
++        success: false,
++        message: 'Username already taken. Please choose a different username.'
++      });
+     }
+ 
+     // Create new user (password will be hashed by the pre-save hook). Mark as unverified.
++    console.time('User.create');
+     const user = await User.create({
+-      name: name.trim(),
+-      username: username.toLowerCase().trim(),
+-      email: email.toLowerCase().trim(),
+-      mobile: mobile.trim(),
++      name: trimmedName,
++      username: normalizedUsername,
++      email: normalizedEmail,
++      mobile: trimmedMobile,
+       password, // Will be hashed by pre-save hook
+       emailVerified: false
+     });
++    console.timeEnd('User.create');
+ 
+     // Generate an email verification OTP
+     const otpSource = process.env.DEFAULT_OTP;
+     const otp = otpSource !== undefined
+       ? otpSource.toString().padStart(4, '0')
+       : Math.floor(1000 + Math.random() * 9000).toString();
++
++    console.time('otpHash');
+     const emailVerifyHash = await bcrypt.hash(otp, 10);
++    console.timeEnd('otpHash');
++
+     const emailVerifyExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+ 
+     user.emailVerifyHash = emailVerifyHash;
+     user.emailVerifyExpiresAt = emailVerifyExpiresAt;
+     user.emailVerifyAttempts = 0;
+-    await user.save();
+ 
+-    // Send verification OTP via email if SMTP configured
+-    const smtpHost = process.env.SMTP_HOST;
+-    const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
+-    const smtpUser = process.env.SMTP_USER;
+-    const smtpPass = process.env.SMTP_PASS;
+-    const sanitizedSmtpUser = typeof smtpUser === 'string' ? smtpUser.trim() : smtpUser;
+-    const sanitizedSmtpPass = typeof smtpPass === 'string'
+-      ? smtpPass.replace(/\s+/g, '').trim()
+-      : smtpPass;
+-    const smtpFrom = process.env.SMTP_FROM || smtpUser;
++    console.time('user.save');
++    await user.save();
++    console.timeEnd('user.save');
+ 
+-    if (smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password' && user.email) {
+-      const transporter = nodemailer.createTransport({
+-        host: smtpHost,
+-        port: smtpPort,
+-        secure: smtpPort === 465,
+-        auth: { user: sanitizedSmtpUser, pass: sanitizedSmtpPass }
+-      });
+-      const { html, text } = buildPickziOtpEmail({ name: user.name, otp, expiresInMinutes: 10 });
+-      await transporter.sendMail({
+-        from: smtpFrom,
+-        to: user.email,
+-        subject: 'Verify your Pickzi account',
+-        text,
+-        html
+-      });
+-    }
++    // Send verification OTP via email asynchronously
++    console.log('Starting async email send');
++    sendVerificationEmailIfConfigured(user, otp).catch(err => console.error('Error sending verification email:', err));
++    console.log('Async email send called');
+ 
+     return res.status(201).json({
+       message: 'User registered successfully. Please verify your email with the OTP sent.',
+@@ -362,14 +442,14 @@ router.post('/forgot-password', async (req, res) => {
+         auth: { user: sanitizedSmtpUser, pass: sanitizedSmtpPass }
+       });
+       const { html, text } = buildPickziOtpEmail({ name: user.name, otp });
+-      await transporter.sendMail({
++      transporter.sendMail({
+         from: smtpFrom,
+         to: user.email,
+         subject: 'Pickzi password reset code',
+         text,
+         html
+-      });
+-      // Email sent successfully; never expose OTP in response
++      }).catch(err => console.error('Error sending password reset email:', err));
++      // Email sent successfully (initiated); never expose OTP in response
+       return res.status(200).json({ message: 'OTP sent to registered email' });
+     }
+ 
+diff --git a/backend/scripts/bench_bcrypt.js b/backend/scripts/bench_bcrypt.js
+new file mode 100644
+index 0000000..0985b05
+--- /dev/null
++++ b/backend/scripts/bench_bcrypt.js
+@@ -0,0 +1,17 @@
++
++const bcrypt = require('bcryptjs');
++
++async function bench() {
++    console.log('Starting bcryptjs benchmark...');
++    const start = Date.now();
++    await bcrypt.hash('testpassword', 10);
++    const end = Date.now();
++    console.log(`Time for cost 10: ${end - start}ms`);
++
++    const start8 = Date.now();
++    await bcrypt.hash('testpassword', 8);
++    const end8 = Date.now();
++    console.log(`Time for cost 8: ${end8 - start8}ms`);
++}
++
++bench();
+diff --git a/backend/scripts/measure_latency.js b/backend/scripts/measure_latency.js
+new file mode 100644
+index 0000000..212fbed
+--- /dev/null
++++ b/backend/scripts/measure_latency.js
+@@ -0,0 +1,35 @@
++
++const API_URL = 'http://localhost:5000/api/users/register';
++
++async function measureLatency() {
++    const ts = Date.now();
++    const user = {
++        name: 'Latency Test',
++        username: `lat_${ts}`,
++        email: `lat_${ts}@test.com`,
++        mobile: '1234567890',
++        password: 'Password123!',
++        confirmPassword: 'Password123!'
++    };
++
++    const start = Date.now();
++    try {
++        const res = await fetch(API_URL, {
++            method: 'POST',
++            headers: { 'Content-Type': 'application/json' },
++            body: JSON.stringify(user)
++        });
++        const duration = Date.now() - start;
++        const body = await res.json();
++        console.log(`Status: ${res.status}, Duration: ${duration}ms`);
++        if (duration > 2000) {
++            console.log('WARNING: Response took longer than 2s');
++        } else {
++            console.log('SUCCESS: Response was fast');
++        }
++    } catch (err) {
++        console.error('Fetch error:', err);
++    }
++}
++
++measureLatency();
+diff --git a/backend/test_fix.js b/backend/test_fix.js
+new file mode 100644
+index 0000000..1dc65b7
+--- /dev/null
++++ b/backend/test_fix.js
+@@ -0,0 +1,79 @@
++const express = require('express');
++const request = require('supertest');
++const mongoose = require('mongoose');
++const User = require('./models/User');
++
++// Simple test to verify the fix
++async function testFix() {
++  try {
++    // Connect to database
++    await mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/pickzi');
++    console.log('Connected to MongoDB');
++
++    // Clean up test data
++    await User.deleteMany({ email: /test.*@example\.com/ });
++
++    const app = express();
++    app.use(express.json());
++    
++    // Import the routes
++    const userRoutes = require('./routes/userRoutes');
++    app.use('/api/users', userRoutes);
++
++    console.log('\n=== Testing Registration Fix ===');
++
++    // Test 1: Register with new email
++    console.log('\n1. Testing new registration...');
++    const response1 = await request(app)
++      .post('/api/users/register')
++      .send({
++        name: 'Test User',
++        username: 'testuser123',
++        email: 'test@example.com',
++        mobile: '1234567890',
++        password: 'TestPass123',
++        confirmPassword: 'TestPass123'
++      });
++
++    console.log('Response 1:', response1.status, response1.body.message);
++
++    // Test 2: Try to register again with same email (should update existing)
++    console.log('\n2. Testing duplicate registration with same email...');
++    const response2 = await request(app)
++      .post('/api/users/register')
++      .send({
++        name: 'Updated User',
++        username: 'updateduser',
++        email: 'test@example.com',
++        mobile: '0987654321',
++        password: 'NewPass123',
++        confirmPassword: 'NewPass123'
++      });
++
++    console.log('Response 2:', response2.status, response2.body.message);
++
++    // Test 3: Check if user was updated
++    console.log('\n3. Checking user data...');
++    const user = await User.findOne({ email: 'test@example.com' });
++    if (user) {
++      console.log('User found:', {
++        name: user.name,
++        username: user.username,
++        mobile: user.mobile,
++        emailVerified: user.emailVerified
++      });
++    }
++
++    console.log('\n=== Test Complete ===');
++
++  } catch (error) {
++    console.error('Test error:', error);
++  } finally {
++    await mongoose.connection.close();
++  }
++}
++
++// Only run if this file is executed directly
++if (require.main === module) {
++  testFix();
++}
+diff --git a/frontend/src/Pages/Register.jsx b/frontend/src/Pages/Register.jsx
+index f9eeeb6..beafb27 100644
+--- a/frontend/src/Pages/Register.jsx
++++ b/frontend/src/Pages/Register.jsx
+@@ -7,6 +7,7 @@ import { AuthAPI } from '../api/client';
+ const Register = () => {
+   const navigate = useNavigate();
+   const toast = useToast();
++  const [loading, setLoading] = useState(false);
+   const [form, setForm] = useState({
+     name: '',
+     username: '',
+@@ -20,6 +21,7 @@ const Register = () => {
+ 
+   const onChange = (e) => {
+     setForm({ ...form, [e.target.name]: e.target.value });
++    if (error) setError('');
+   };
+ 
+   const onSubmit = async (e) => {
+@@ -34,6 +36,8 @@ const Register = () => {
+       setError('Passwords do not match');
+       return;
+     }
++
++    setLoading(true);
+     try {
+       const payload = {
+         name: form.name,
+@@ -65,6 +69,8 @@ const Register = () => {
+       const msg = err?.message || 'Registration failed. Please try again.';
+       setError(msg);
+       toast.error(msg);
++    } finally {
++      setLoading(false);
+     }
+   };
+ 
+@@ -72,18 +78,27 @@ const Register = () => {
+     <div className="auth-page">
+       <div className="auth-shell">
+         <aside className="auth-illustration">
+-          <div>
++          <div className="auth-illustration-content">
+             <h3>Join the Pickzi community</h3>
+             <p>Create your account to unlock curated collections, personalised recommendations, and faster checkout experiences tailored just for you.</p>
+           </div>
+           <ul className="auth-info-list">
+-            <li><span className="auth-info-bullet">1</span> Special offers delivered to your inbox</li>
+-            <li><span className="auth-info-bullet">2</span> Save your wishlist across devices</li>
+-            <li><span className="auth-info-bullet">3</span> One-click checkout with secure payments</li>
++            <li>
++              <span className="auth-icon">✨</span>
++              <span>Special offers delivered to your inbox</span>
++            </li>
++            <li>
++              <span className="auth-icon">💖</span>
++              <span>Save your wishlist across devices</span>
++            </li>
++            <li>
++              <span className="auth-icon">🚀</span>
++              <span>One-click checkout with secure payments</span>
++            </li>
+           </ul>
+         </aside>
+         <section className="auth-card">
+-          <header>
++          <header className="auth-header">
+             <h2 className="auth-title">Create an account</h2>
+             <p className="auth-subtitle">Tell us a few details and start shopping smarter.</p>
+           </header>
+@@ -91,19 +106,48 @@ const Register = () => {
+             <div className="auth-grid">
+               <div className="auth-field">
+                 <label htmlFor="name">Full name</label>
+-                <input id="name" name="name" value={form.name} onChange={onChange} placeholder="Jane Doe" />
++                <input
++                  id="name"
++                  name="name"
++                  value={form.name}
++                  onChange={onChange}
++                  placeholder="Jane Doe"
++                  className="auth-input"
++                />
+               </div>
+               <div className="auth-field">
+                 <label htmlFor="username">Username</label>
+-                <input id="username" name="username" value={form.username} onChange={onChange} placeholder="janedoe" />
++                <input
++                  id="username"
++                  name="username"
++                  value={form.username}
++                  onChange={onChange}
++                  placeholder="janedoe"
++                  className="auth-input"
++                />
+               </div>
+               <div className="auth-field">
+                 <label htmlFor="email">Email</label>
+-                <input id="email" type="email" name="email" value={form.email} onChange={onChange} placeholder="jane@example.com" />
++                <input
++                  id="email"
++                  type="email"
++                  name="email"
++                  value={form.email}
++                  onChange={onChange}
++                  placeholder="jane@example.com"
++                  className="auth-input"
++                />
+               </div>
+               <div className="auth-field">
+                 <label htmlFor="mobile">Mobile number</label>
+-                <input id="mobile" name="mobile" value={form.mobile} onChange={onChange} placeholder="e.g. 9876543210" />
++                <input
++                  id="mobile"
++                  name="mobile"
++                  value={form.mobile}
++                  onChange={onChange}
++                  placeholder="e.g. 9876543210"
++                  className="auth-input"
++                />
+               </div>
+               <div className="auth-field">
+                 <label htmlFor="password">Password</label>
+@@ -115,11 +159,13 @@ const Register = () => {
+                     value={form.password}
+                     onChange={onChange}
+                     placeholder="Create a password"
++                    className="auth-input"
+                   />
+                   <button
+                     type="button"
+                     className="auth-toggle"
+                     onClick={() => setShowPassword((prev) => ({ ...prev, password: !prev.password }))}
++                    tabIndex="-1"
+                   >
+                     {showPassword.password ? 'Hide' : 'Show'}
+                   </button>
+@@ -135,23 +181,39 @@ const Register = () => {
+                     value={form.confirmPassword}
+                     onChange={onChange}
+                     placeholder="Repeat password"
++                    className="auth-input"
+                   />
+                   <button
+                     type="button"
+                     className="auth-toggle"
+                     onClick={() => setShowPassword((prev) => ({ ...prev, confirm: !prev.confirm }))}
++                    tabIndex="-1"
+                   >
+                     {showPassword.confirm ? 'Hide' : 'Show'}
+                   </button>
+                 </div>
+               </div>
+             </div>
+-            {error ? <div className="auth-error" style={{ marginTop: 4 }}>{error}</div> : null}
+-            <button type="submit" className="auth-button" style={{ marginTop: 8 }}>Create account</button>
++
++            {error && (
++              <div className="auth-error-banner">
++                <span className="error-icon">⚠️</span>
++                <span>{error}</span>
++              </div>
++            )}
++
++            <button
++              type="submit"
++              className={`auth-button ${loading ? 'loading' : ''}`}
++              disabled={loading}
++              style={{ marginTop: '24px' }}
++            >
++              {loading ? 'Creating Account...' : 'Create Account'}
++            </button>
+           </form>
+-          <div className="auth-link-row" style={{ justifyContent: 'flex-start' }}>
++          <div className="auth-footer">
+             <span>Already have an account?</span>
+-            <Link className="auth-link" to="/login">Login</Link>
++            <Link className="auth-link-highlight" to="/login">Log in</Link>
+           </div>
+         </section>
+       </div>
+diff --git a/frontend/src/api/client.js b/frontend/src/api/client.js
+index 80ab2e2..032c7df 100644
+--- a/frontend/src/api/client.js
++++ b/frontend/src/api/client.js
+@@ -1,4 +1,22 @@
+-   const API_BASE = process.env.REACT_APP_API || 'http://localhost:5000';
++ const resolveDefaultApiBase = () => {
++  if (process.env.REACT_APP_API) {
++    return process.env.REACT_APP_API;
++  }
++
++  if (typeof window !== 'undefined') {
++    const { protocol, hostname } = window.location;
++    if (hostname === 'localhost' || hostname === '127.0.0.1') {
++      return 'http://localhost:5000';
++    }
++    if (/^192\.168\.|^10\.|^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)) {
++      return `${protocol}//${hostname}:5000`;
++    }
++  }
++
++  return 'https://pickzi-backend.onrender.com';
++};
++
++const API_BASE = resolveDefaultApiBase();
+ 
+ const TOKEN_KEY = 'auth_token';
+ const USER_KEY = 'auth_user';
+@@ -93,12 +111,37 @@ export async function api(path, { method = 'GET', body, headers } = {}) {
+     body: body ? JSON.stringify(body) : undefined,
+   });
+ 
+-  const isJson = res.headers.get('content-type')?.includes('application/json');
++  const contentType = res.headers.get('content-type') || '';
++  const isJson = contentType.includes('application/json');
+   const data = isJson ? await res.json() : await res.text();
++
+   if (!res.ok) {
+-    const msg = isJson && data && data.message ? data.message : res.statusText;
+-    throw new Error(msg || 'Request failed');
++    let message = res.statusText || 'Request failed';
++
++    if (isJson && data && typeof data === 'object') {
++      if (typeof data.message === 'string' && data.message.trim()) {
++        message = data.message.trim();
++      } else if (Array.isArray(data.errors) && data.errors.length > 0) {
++        const joined = data.errors
++          .map((err) => (typeof err?.message === 'string' ? err.message.trim() : ''))
++          .filter(Boolean)
++          .join('\n');
++        if (joined) {
++          message = joined;
++        }
++      }
++    } else if (isJson && typeof data === 'string' && data.trim()) {
++      message = data.trim();
++    } else if (!isJson && typeof data === 'string' && data.trim()) {
++      message = data.trim();
++    }
++
++    const error = new Error(message || 'Request failed');
++    error.status = res.status;
++    error.payload = data;
++    throw error;
+   }
++
+   return data;
+ }
+ 
+diff --git a/frontend/src/styles/Auth.css b/frontend/src/styles/Auth.css
+index e1ec1e7..d408fb4 100644
+--- a/frontend/src/styles/Auth.css
++++ b/frontend/src/styles/Auth.css
+@@ -2,15 +2,15 @@
+   --auth-primary: #6366f1;
+   --auth-secondary: #ec4899;
+   --auth-accent: #22d3ee;
+-  --auth-bg: linear-gradient(135deg, rgba(99,102,241,0.12), rgba(236,72,153,0.12));
++  --auth-bg: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(236, 72, 153, 0.12));
+ }
+ 
+ .auth-page {
+   min-height: calc(100vh - 70px);
+   padding: 60px 20px;
+-  background: radial-gradient(circle at top left, rgba(99,102,241,0.22), transparent 45%),
+-              radial-gradient(circle at bottom right, rgba(236,72,153,0.22), transparent 45%),
+-              #f8fafc;
++  background: radial-gradient(circle at top left, rgba(99, 102, 241, 0.22), transparent 45%),
++    radial-gradient(circle at bottom right, rgba(236, 72, 153, 0.22), transparent 45%),
++    #f8fafc;
+   display: flex;
+   align-items: center;
+   justify-content: center;
+@@ -30,7 +30,7 @@
+ }
+ 
+ .auth-illustration {
+-  background: linear-gradient(160deg, rgba(99,102,241,0.95), rgba(236,72,153,0.85));
++  background: linear-gradient(160deg, rgba(99, 102, 241, 0.95), rgba(236, 72, 153, 0.85));
+   color: #f8fafc;
+   padding: 40px 32px;
+   display: flex;
+@@ -57,27 +57,36 @@
+   gap: 24px;
+ }
+ 
+-.auth-card header {
++
++.auth-header {
+   display: flex;
+   flex-direction: column;
+-  gap: 6px;
++  gap: 8px;
+ }
+ 
+ .auth-title {
+-  font-size: 30px;
++  font-size: 32px;
+   font-weight: 700;
+   color: #111827;
++  letter-spacing: -0.02em;
+ }
+ 
+ .auth-subtitle {
+-  color: #6b7280;
++  color: #64748b;
+   font-size: 15px;
++  line-height: relaxed;
+ }
+ 
+ .auth-form {
+   display: flex;
+   flex-direction: column;
++  gap: 20px;
++}
++
++.auth-grid {
++  display: grid;
+   gap: 16px;
++  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+ }
+ 
+ .auth-field {
+@@ -86,6 +95,36 @@
+   gap: 8px;
+ }
+ 
++.auth-field label {
++  font-size: 13px;
++  font-weight: 600;
++  color: #334155;
++  text-transform: uppercase;
++  letter-spacing: 0.5px;
++}
++
++.auth-input,
++.auth-field input,
++.auth-field select {
++  width: 100%;
++  padding: 14px 16px;
++  border-radius: 14px;
++  border: 1px solid rgba(148, 163, 184, 0.4);
++  background: rgba(255, 255, 255, 0.8);
++  font-size: 15px;
++  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
++}
++
++.auth-input:focus,
++.auth-field input:focus,
++.auth-field select:focus {
++  outline: none;
++  border-color: var(--auth-primary);
++  background: #ffffff;
++  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.12);
++  transform: translateY(-1px);
++}
++
+ .auth-password-wrapper {
+   position: relative;
+   display: flex;
+@@ -93,189 +132,174 @@
+ }
+ 
+ .auth-password-wrapper input {
+-  flex: 1;
+   padding-right: 90px;
+ }
+ 
+ .auth-toggle {
+   position: absolute;
+-  right: 12px;
++  right: 14px;
++  top: 50%;
++  transform: translateY(-50%);
+   background: none;
+   border: none;
+-  color: var(--auth-primary);
++  color: #64748b;
++  font-size: 12px;
+   font-weight: 600;
++  text-transform: uppercase;
+   cursor: pointer;
++  padding: 4px 8px;
++  border-radius: 6px;
++  transition: all 0.2s ease;
+ }
+ 
+ .auth-toggle:hover {
+-  color: var(--auth-secondary);
+-}
+-
+-.auth-field label {
+-  font-size: 14px;
+-  font-weight: 600;
+-  color: #374151;
++  color: var(--auth-primary);
++  background: rgba(99, 102, 241, 0.1);
+ }
+ 
+-.auth-input,
+-.auth-field input,
+-.auth-field select {
+-  width: 100%;
+-  padding: 12px 14px;
++.auth-error-banner {
++  display: flex;
++  align-items: center;
++  gap: 12px;
++  background: #fef2f2;
++  border: 1px solid #fee2e2;
++  color: #ef4444;
++  padding: 14px 18px;
+   border-radius: 12px;
+-  border: 1px solid rgba(148, 163, 184, 0.45);
+-  background: rgba(255, 255, 255, 0.9);
+-  font-size: 15px;
+-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
++  font-size: 14px;
++  font-weight: 500;
++  animation: slideDown 0.3s ease-out;
+ }
+ 
+-.auth-input:focus,
+-.auth-field input:focus,
+-.auth-field select:focus {
+-  outline: none;
+-  border-color: var(--auth-primary);
+-  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.18);
++.error-icon {
++  font-size: 18px;
+ }
+ 
+ .auth-button {
+-  margin-top: 8px;
++  margin-top: 28px;
+   width: 100%;
+   border: none;
+-  border-radius: 14px;
+-  padding: 14px;
++  border-radius: 16px;
++  padding: 16px;
+   font-size: 16px;
+   font-weight: 600;
+   color: #fff;
+   background: linear-gradient(135deg, var(--auth-primary), var(--auth-secondary));
+   cursor: pointer;
+-  box-shadow: 0 18px 32px -22px rgba(99, 102, 241, 0.6);
+-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+-}
+-
+-.auth-button:hover {
+-  transform: translateY(-1px);
+-  box-shadow: 0 22px 36px -24px rgba(236, 72, 153, 0.6);
+-}
+-
+-.auth-link-row {
+-  display: flex;
+-  justify-content: space-between;
+-  align-items: center;
+-  font-size: 14px;
+-  color: #6b7280;
++  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
++  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
++  position: relative;
++  overflow: hidden;
+ }
+ 
+-.auth-secondary-link-row {
+-  margin-top: 6px;
+-  display: flex;
+-  align-items: center;
+-  gap: 8px;
+-  font-size: 14px;
+-  color: #6b7280;
++.auth-button:hover:not(:disabled) {
++  transform: translateY(-2px);
++  box-shadow: 0 8px 20px rgba(99, 102, 241, 0.35);
+ }
+ 
+-.auth-link {
+-  color: var(--auth-primary);
+-  font-weight: 600;
+-  text-decoration: none;
+-  transition: color 0.2s ease;
++.auth-button:disabled {
++  opacity: 0.7;
++  cursor: not-allowed;
++  transform: none;
+ }
+ 
+-.auth-link:hover {
+-  color: var(--auth-secondary);
++.auth-button.loading::after {
++  content: "";
++  position: absolute;
++  width: 20px;
++  height: 20px;
++  top: 50%;
++  left: 50%;
++  margin-top: -10px;
++  margin-left: -10px;
++  border: 2px solid rgba(255, 255, 255, 0.3);
++  border-top-color: #fff;
++  border-radius: 50%;
++  animation: spinner 0.8s linear infinite;
+ }
+ 
+-.auth-error {
+-  background: rgba(248, 113, 113, 0.12);
+-  border: 1px solid rgba(239, 68, 68, 0.25);
+-  color: #b91c1c;
+-  border-radius: 12px;
+-  padding: 12px 14px;
+-  font-size: 14px;
++.auth-button.loading {
++  color: transparent;
+ }
+ 
+-.auth-success {
+-  background: rgba(34, 197, 94, 0.12);
+-  border: 1px solid rgba(34, 197, 94, 0.2);
+-  color: #166534;
+-  border-radius: 12px;
+-  padding: 12px 14px;
+-  font-size: 14px;
++@keyframes spinner {
++  to {
++    transform: rotate(360deg);
++  }
+ }
+ 
+-.auth-grid {
+-  display: grid;
+-  gap: 16px;
+-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+-}
++@keyframes slideDown {
++  from {
++    opacity: 0;
++    transform: translateY(-10px);
++  }
+ 
+-.auth-info-list {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 10px;
+-  margin-top: 24px;
++  to {
++    opacity: 1;
++    transform: translateY(0);
++  }
+ }
+ 
+-.auth-info-list li {
+-  list-style: none;
++.auth-footer {
+   display: flex;
++  justify-content: flex-start;
+   align-items: center;
+-  gap: 12px;
++  gap: 8px;
++  margin-top: 10px;
+   font-size: 14px;
+-  color: rgba(241, 245, 249, 0.9);
++  color: #64748b;
+ }
+ 
+-.auth-info-bullet {
+-  width: 32px;
+-  height: 32px;
+-  border-radius: 50%;
+-  background: rgba(255, 255, 255, 0.15);
+-  display: grid;
+-  place-items: center;
++.auth-link-highlight {
++  color: var(--auth-primary);
+   font-weight: 600;
++  text-decoration: none;
++  padding: 6px 12px;
++  background: rgba(99, 102, 241, 0.08);
++  border-radius: 8px;
++  transition: all 0.2s ease;
+ }
+ 
+-.otp-row {
+-  display: flex;
+-  align-items: center;
+-  gap: 12px;
+-}
+-
+-.otp-row input {
+-  flex: 1;
+-}
+-
+-.auth-secondary-button {
+-  padding: 12px 18px;
+-  border-radius: 12px;
+-  border: 1px solid rgba(148, 163, 184, 0.6);
+-  background: rgba(248, 250, 252, 0.9);
+-  font-weight: 600;
+-  color: #1f2937;
+-  cursor: pointer;
+-  transition: background 0.2s ease, border-color 0.2s ease;
++.auth-link-highlight:hover {
++  background: rgba(99, 102, 241, 0.15);
++  transform: translateY(-1px);
+ }
+ 
+-.auth-secondary-button:hover {
+-  background: rgba(226, 232, 240, 0.9);
+-  border-color: rgba(99, 102, 241, 0.45);
++.auth-illustration-content h3 {
++  font-size: 32px;
++  font-weight: 700;
++  margin-bottom: 16px;
++  letter-spacing: -0.01em;
+ }
+ 
+-.auth-note {
+-  font-size: 13px;
+-  color: #9ca3af;
++.auth-icon {
++  font-size: 20px;
++  background: rgba(255, 255, 255, 0.2);
++  width: 36px;
++  height: 36px;
++  border-radius: 10px;
++  display: grid;
++  place-items: center;
+ }
+ 
++/* Response Design Tweaks */
+ @media (max-width: 768px) {
++  .auth-page {
++    padding: 20px;
++    align-items: flex-start;
++  }
++
+   .auth-shell {
+     grid-template-columns: 1fr;
++    margin-top: 20px;
+   }
+ 
+   .auth-illustration {
+-    min-height: 220px;
++    min-height: auto;
++    padding: 30px;
+   }
+ 
+   .auth-card {
+-    padding: 36px 28px;
++    padding: 30px 24px;
+   }
+-}
++}
+\ No newline at end of file
+-- 
+2.51.0.windows.1
+

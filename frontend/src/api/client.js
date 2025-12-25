@@ -1,4 +1,22 @@
-   const API_BASE = process.env.REACT_APP_API || 'http://localhost:5000';
+ const resolveDefaultApiBase = () => {
+  if (process.env.REACT_APP_API) {
+    return process.env.REACT_APP_API;
+  }
+
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname } = window.location;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://localhost:5000';
+    }
+    if (/^192\.168\.|^10\.|^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)) {
+      return `${protocol}//${hostname}:5000`;
+    }
+  }
+
+  return 'https://pickzi-backend.onrender.com';
+};
+
+const API_BASE = resolveDefaultApiBase();
 
 const TOKEN_KEY = 'auth_token';
 const USER_KEY = 'auth_user';
@@ -93,12 +111,37 @@ export async function api(path, { method = 'GET', body, headers } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  const isJson = res.headers.get('content-type')?.includes('application/json');
+  const contentType = res.headers.get('content-type') || '';
+  const isJson = contentType.includes('application/json');
   const data = isJson ? await res.json() : await res.text();
+
   if (!res.ok) {
-    const msg = isJson && data && data.message ? data.message : res.statusText;
-    throw new Error(msg || 'Request failed');
+    let message = res.statusText || 'Request failed';
+
+    if (isJson && data && typeof data === 'object') {
+      if (typeof data.message === 'string' && data.message.trim()) {
+        message = data.message.trim();
+      } else if (Array.isArray(data.errors) && data.errors.length > 0) {
+        const joined = data.errors
+          .map((err) => (typeof err?.message === 'string' ? err.message.trim() : ''))
+          .filter(Boolean)
+          .join('\n');
+        if (joined) {
+          message = joined;
+        }
+      }
+    } else if (isJson && typeof data === 'string' && data.trim()) {
+      message = data.trim();
+    } else if (!isJson && typeof data === 'string' && data.trim()) {
+      message = data.trim();
+    }
+
+    const error = new Error(message || 'Request failed');
+    error.status = res.status;
+    error.payload = data;
+    throw error;
   }
+
   return data;
 }
 
