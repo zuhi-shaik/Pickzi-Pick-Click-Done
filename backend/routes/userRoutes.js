@@ -71,6 +71,19 @@ const buildPickziOtpEmail = ({ name, otp, expiresInMinutes = 5 }) => {
   return { html, text };
 };
 
+// Build a nodemailer transporter with sensible defaults and fallback between ports
+const buildSmtpTransporter = (host, port, user, pass) => {
+  const secure = Number(port) === 465;
+  return nodemailer.createTransport({
+    host,
+    port: Number(port),
+    secure,
+    auth: { user, pass },
+    connectionTimeout: 10000,
+    socketTimeout: 10000,
+  });
+};
+
 const sendVerificationEmailIfConfigured = async (user, otp) => {
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
@@ -83,21 +96,37 @@ const sendVerificationEmailIfConfigured = async (user, otp) => {
   const smtpFrom = process.env.SMTP_FROM || smtpUser;
 
   if (smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password' && user.email) {
-    const transporter = nodemailer.createTransport({
-      host: smtpHost,
-      port: smtpPort,
-      secure: smtpPort === 465,
-      auth: { user: sanitizedSmtpUser, pass: sanitizedSmtpPass }
-    });
     const { html, text } = buildPickziOtpEmail({ name: user.name, otp, expiresInMinutes: 10 });
-    await transporter.sendMail({
-      from: smtpFrom,
-      to: user.email,
-      subject: 'Verify your Pickzi account',
-      text,
-      html
-    });
+    const primaryPort = Number(smtpPort);
+    const altPort = primaryPort === 465 ? 587 : 465;
+    try {
+      const transporter = buildSmtpTransporter(smtpHost, primaryPort, sanitizedSmtpUser, sanitizedSmtpPass);
+      await transporter.sendMail({ from: smtpFrom, to: user.email, subject: 'Verify your Pickzi account', text, html });
+      return true;
+    } catch (err1) {
+      console.error('Error sending verification email (primary port):', err1);
+      try {
+        const transporter2 = buildSmtpTransporter(smtpHost, altPort, sanitizedSmtpUser, sanitizedSmtpPass);
+        await transporter2.sendMail({ from: smtpFrom, to: user.email, subject: 'Verify your Pickzi account', text, html });
+        return true;
+      } catch (err2) {
+        console.error('Error sending verification email (fallback port):', err2);
+        return false;
+      }
+    }
   }
+  return false;
+};
+
+// Helper to determine if SMTP is configured; used to surface emailSent flag in responses
+const isSmtpConfigured = () => {
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const sanitizedSmtpUser = typeof smtpUser === 'string' ? smtpUser.trim() : smtpUser;
+  const sanitizedSmtpPass = typeof smtpPass === 'string' ? smtpPass.replace(/\s+/g, '').trim() : smtpPass;
+  return !!(smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password');
 };
 
 // POST /api/users/register
@@ -183,10 +212,8 @@ router.post('/register', [
           existingEmailUser.mobile = trimmedMobile;
           existingEmailUser.password = password;
 
-          const otpSource = process.env.DEFAULT_OTP;
-          const otp = otpSource !== undefined
-            ? otpSource.toString().padStart(4, '0')
-            : Math.floor(1000 + Math.random() * 9000).toString();
+          // Always generate real-time random OTP (4 digits)
+          const otp = Math.floor(1000 + Math.random() * 9000).toString();
           const emailVerifyHash = await bcrypt.hash(otp, 10);
           const emailVerifyExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -195,19 +222,32 @@ router.post('/register', [
           existingEmailUser.emailVerifyAttempts = 0;
 
           await existingEmailUser.save();
+          const smtpReady = isSmtpConfigured();
+          if (!smtpReady) {
+            console.warn('[WARN] SMTP not configured. Skipping verification email send.');
+          }
           // Send email asynchronously to avoid blocking the response
-          sendVerificationEmailIfConfigured(existingEmailUser, otp).catch(err => console.error('Error sending verification email:', err));
+          let emailSent = false;
+          if (smtpReady) {
+            emailSent = await sendVerificationEmailIfConfigured(existingEmailUser, otp);
+          }
 
-          return res.status(200).json({
+          const responsePayload = {
             message: 'Account already exists but is not verified. We sent a new verification code to your email.',
             needsEmailVerification: true,
+            emailSent: !!emailSent,
             user: {
               id: existingEmailUser._id,
               name: existingEmailUser.name,
               username: existingEmailUser.username,
               email: existingEmailUser.email
             }
-          });
+          };
+          // Optional dev OTP exposure when explicitly enabled
+          if ((!emailSent) && process.env.EXPOSE_OTP === 'true' && process.env.DEFAULT_OTP) {
+            responsePayload.dev_otp = otp;
+          }
+          return res.status(200).json(responsePayload);
         }
       } else {
         console.log(`[DEBUG] Email verified and exists -> duplicate`);
@@ -243,10 +283,8 @@ router.post('/register', [
     console.timeEnd('User.create');
 
     // Generate an email verification OTP
-    const otpSource = process.env.DEFAULT_OTP;
-    const otp = otpSource !== undefined
-      ? otpSource.toString().padStart(4, '0')
-      : Math.floor(1000 + Math.random() * 9000).toString();
+    // Always generate real-time random OTP (4 digits)
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
 
     console.time('otpHash');
     const emailVerifyHash = await bcrypt.hash(otp, 10);
@@ -263,20 +301,31 @@ router.post('/register', [
     console.timeEnd('user.save');
 
     // Send verification OTP via email asynchronously
-    console.log('Starting async email send');
-    sendVerificationEmailIfConfigured(user, otp).catch(err => console.error('Error sending verification email:', err));
-    console.log('Async email send called');
+    const smtpReady = isSmtpConfigured();
+    if (!smtpReady) {
+      console.warn('[WARN] SMTP not configured. Skipping verification email send.');
+    } else {
+      console.log('Starting async email send');
+      // Await to know whether we actually sent the email
+      var emailSent = await sendVerificationEmailIfConfigured(user, otp);
+      console.log('Async email send called');
+    }
 
-    return res.status(201).json({
+    const responsePayload = {
       message: 'User registered successfully. Please verify your email with the OTP sent.',
       needsEmailVerification: true,
+      emailSent: typeof emailSent === 'boolean' ? emailSent : false,
       user: {
         id: user._id,
         name: user.name,
         username: user.username,
         email: user.email
       }
-    });
+    };
+    if ((typeof emailSent === 'boolean' && !emailSent) && process.env.EXPOSE_OTP === 'true' && process.env.DEFAULT_OTP) {
+      responsePayload.dev_otp = otp;
+    }
+    return res.status(201).json(responsePayload);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -435,22 +484,23 @@ router.post('/forgot-password', async (req, res) => {
       : smtpPass;
     const smtpFrom = process.env.SMTP_FROM || smtpUser;
     if (smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password' && user.email) {
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: { user: sanitizedSmtpUser, pass: sanitizedSmtpPass }
-      });
-      const { html, text } = buildPickziOtpEmail({ name: user.name, otp });
-      transporter.sendMail({
-        from: smtpFrom,
-        to: user.email,
-        subject: 'Pickzi password reset code',
-        text,
-        html
-      }).catch(err => console.error('Error sending password reset email:', err));
-      // Email sent successfully (initiated); never expose OTP in response
-      return res.status(200).json({ message: 'OTP sent to registered email' });
+      try {
+        const transporter = buildSmtpTransporter(smtpHost, smtpPort, sanitizedSmtpUser, sanitizedSmtpPass);
+        const { html, text } = buildPickziOtpEmail({ name: user.name, otp });
+        await transporter.sendMail({
+          from: smtpFrom,
+          to: user.email,
+          subject: 'Pickzi password reset code',
+          text,
+          html
+        });
+        // Email sent successfully (awaited); never expose OTP in response
+        return res.status(200).json({ message: 'OTP sent to registered email', emailSent: true });
+      } catch (err) {
+        console.error('Error sending password reset email:', err);
+        // Graceful: inform client but keep same status/message contract, include flag
+        return res.status(200).json({ message: 'OTP sent to registered email', emailSent: false });
+      }
     }
 
     // Else try SMS if Twilio is configured
@@ -976,12 +1026,7 @@ router.post('/order-confirmation', async (req, res) => {
       });
     }
 
-    const transporter = nodemailer.createTransport({
-      host: smtpHost,
-      port: smtpPort,
-      secure: smtpPort === 465,
-      auth: { user: sanitizedUser, pass: sanitizedPass },
-    });
+    const transporter = buildSmtpTransporter(smtpHost, smtpPort, sanitizedUser, sanitizedPass);
 
     const readableTotal = typeof total === 'number' ? total.toFixed(2) : total;
     const formattedItems = (Array.isArray(items) ? items : []).map((item, idx) => {
