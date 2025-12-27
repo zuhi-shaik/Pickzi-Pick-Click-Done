@@ -3,12 +3,12 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const twilio = require('twilio');
+const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
 const auth = require('../middleware/auth');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const Order = require('../models/Order');
-const sendEmail = require('../utils/brevoMailer');
 
 const { Types } = mongoose;
 
@@ -71,98 +71,62 @@ const buildPickziOtpEmail = ({ name, otp, expiresInMinutes = 5 }) => {
   return { html, text };
 };
 
-const buildPasswordResetEmail = ({ name, otp, expiresInMinutes = 5 }) => {
-  const safeName = escapeHtml(name && name.trim() ? name.trim() : 'there');
-  const safeOtp = escapeHtml(otp);
-  const otpDigits = safeOtp.split('').map((digit) => `
-      <span style="display:inline-flex; align-items:center; justify-content:center; width:56px; height:56px; margin:0 7px; border-radius:16px; background:rgba(59,130,246,0.12); border:1px solid rgba(59,130,246,0.35); font-size:26px; font-weight:700; color:#2563eb; letter-spacing:1px;">
-        ${digit}
-      </span>
-    `).join('');
-
-  return `
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="width:100%; background:#f8fafc; padding:32px 12px; font-family:'Poppins','Segoe UI',sans-serif;">
-      <tr>
-        <td align="center">
-          <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="max-width:540px; width:100%; background:#ffffff; border-radius:24px; overflow:hidden; box-shadow:0 25px 65px -35px rgba(37,99,235,0.45);">
-            <tr>
-              <td style="padding:36px 32px 28px; background:linear-gradient(135deg,#2563eb,#0ea5e9); color:#fff; text-align:left;">
-                <div style="display:flex; align-items:center; justify-content:space-between;">
-                  <span style="font-size:16px; font-weight:600; letter-spacing:3px; text-transform:uppercase; opacity:0.85;">PICKZI</span>
-                  <span style="font-size:13px; font-weight:500; background:rgba(15,23,42,0.25); padding:6px 12px; border-radius:12px;">Password Reset</span>
-                </div>
-                <h1 style="margin:20px 0 6px; font-size:30px; font-weight:700; letter-spacing:-0.02em;">Reset your Pickzi password</h1>
-                <p style="margin:0; font-size:15px; line-height:1.6; opacity:0.9;">Use the one-time code below to confirm this password reset request. It expires in <strong>${expiresInMinutes} minutes</strong>.</p>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:32px; text-align:center; color:#0f172a;">
-                <p style="margin:0 0 18px; font-size:16px;">Hi <strong>${safeName}</strong>, here’s your password reset code:</p>
-                <div style="display:inline-flex; align-items:center; justify-content:center;">${otpDigits}</div>
-                <p style="margin:28px 0 10px; font-size:14px; line-height:1.7; color:#475569;">Didn’t request this reset? Ignore this email or reach us at <a href="mailto:support@pickzi.com" style="color:#2563eb; text-decoration:none; font-weight:600;">support@pickzi.com</a>.</p>
-                <div style="margin:22px auto 0; max-width:360px; padding:18px 22px; background:rgba(14,165,233,0.08); border-radius:16px; border:1px solid rgba(14,165,233,0.12); font-size:13px; line-height:1.6; color:#0f172a;">
-                  <strong>Security tip:</strong> Never share this code with anyone—even Pickzi support. We’ll never ask for it.
-                </div>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:22px 28px; background:#f1f5f9; text-align:center; font-size:12px; color:#64748b;">
-                © ${new Date().getFullYear()} Pickzi. Shop bold, shop brilliant.
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  `;
-};
-
-const isEmailServiceConfigured = () => {
-  const apiKey = typeof process.env.BREVO_API_KEY === 'string' && process.env.BREVO_API_KEY.trim().length > 0;
-  const sender = typeof process.env.BREVO_SENDER === 'string' && process.env.BREVO_SENDER.trim().length > 0;
-  return apiKey && sender;
-};
-
-const sendPickziEmail = async ({ to, subject, html }) => {
-  if (!to) {
-    console.warn('[WARN] Attempted to send an email without a recipient.');
-    return false;
-  }
-  if (!isEmailServiceConfigured()) {
-    console.warn('[WARN] Email service not configured. Skipping email send.');
-    return false;
-  }
-  try {
-    await sendEmail({ to, subject, html });
-    return true;
-  } catch (err) {
-    console.error('Error sending email via Brevo:', err);
-    return false;
-  }
-};
-
-const sendVerificationEmail = async (user, otp) => {
-  if (!user || !user.email) {
-    return false;
-  }
-  const { html } = buildPickziOtpEmail({ name: user.name, otp, expiresInMinutes: 10 });
-  return sendPickziEmail({
-    to: user.email,
-    subject: 'Verify your Pickzi account',
-    html,
+// Build a nodemailer transporter with sensible defaults and fallback between ports
+const buildSmtpTransporter = (host, port, user, pass) => {
+  const secure = Number(port) === 465;
+  return nodemailer.createTransport({
+    host,
+    port: Number(port),
+    secure,
+    auth: { user, pass },
+    connectionTimeout: 10000,
+    socketTimeout: 10000,
   });
 };
 
-const sendPasswordResetEmail = async (user, otp) => {
-  if (!user || !user.email) {
-    return false;
+const sendVerificationEmailIfConfigured = async (user, otp) => {
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const sanitizedSmtpUser = typeof smtpUser === 'string' ? smtpUser.trim() : smtpUser;
+  const sanitizedSmtpPass = typeof smtpPass === 'string'
+    ? smtpPass.replace(/\s+/g, '').trim()
+    : smtpPass;
+  const smtpFrom = process.env.SMTP_FROM || smtpUser;
+
+  if (smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password' && user.email) {
+    const { html, text } = buildPickziOtpEmail({ name: user.name, otp, expiresInMinutes: 10 });
+    const primaryPort = Number(smtpPort);
+    const altPort = primaryPort === 465 ? 587 : 465;
+    try {
+      const transporter = buildSmtpTransporter(smtpHost, primaryPort, sanitizedSmtpUser, sanitizedSmtpPass);
+      await transporter.sendMail({ from: smtpFrom, to: user.email, subject: 'Verify your Pickzi account', text, html });
+      return true;
+    } catch (err1) {
+      console.error('Error sending verification email (primary port):', err1);
+      try {
+        const transporter2 = buildSmtpTransporter(smtpHost, altPort, sanitizedSmtpUser, sanitizedSmtpPass);
+        await transporter2.sendMail({ from: smtpFrom, to: user.email, subject: 'Verify your Pickzi account', text, html });
+        return true;
+      } catch (err2) {
+        console.error('Error sending verification email (fallback port):', err2);
+        return false;
+      }
+    }
   }
-  const html = buildPasswordResetEmail({ name: user.name, otp, expiresInMinutes: 5 });
-  return sendPickziEmail({
-    to: user.email,
-    subject: 'Pickzi password reset code',
-    html,
-  });
+  return false;
+};
+
+// Helper to determine if SMTP is configured; used to surface emailSent flag in responses
+const isSmtpConfigured = () => {
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const sanitizedSmtpUser = typeof smtpUser === 'string' ? smtpUser.trim() : smtpUser;
+  const sanitizedSmtpPass = typeof smtpPass === 'string' ? smtpPass.replace(/\s+/g, '').trim() : smtpPass;
+  return !!(smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password');
 };
 
 // POST /api/users/register
@@ -258,7 +222,15 @@ router.post('/register', [
           existingEmailUser.emailVerifyAttempts = 0;
 
           await existingEmailUser.save();
-          const emailSent = await sendVerificationEmail(existingEmailUser, otp);
+          const smtpReady = isSmtpConfigured();
+          if (!smtpReady) {
+            console.warn('[WARN] SMTP not configured. Skipping verification email send.');
+          }
+          // Send email asynchronously to avoid blocking the response
+          let emailSent = false;
+          if (smtpReady) {
+            emailSent = await sendVerificationEmailIfConfigured(existingEmailUser, otp);
+          }
 
           const responsePayload = {
             message: 'Account already exists but is not verified. We sent a new verification code to your email.',
@@ -329,11 +301,20 @@ router.post('/register', [
     console.timeEnd('user.save');
 
     // Send verification OTP via email asynchronously
-    const emailSent = await sendVerificationEmail(user, otp);
+    const smtpReady = isSmtpConfigured();
+    if (!smtpReady) {
+      console.warn('[WARN] SMTP not configured. Skipping verification email send.');
+    } else {
+      console.log('Starting async email send');
+      // Await to know whether we actually sent the email
+      var emailSent = await sendVerificationEmailIfConfigured(user, otp);
+      console.log('Async email send called');
+    }
+
     const responsePayload = {
       message: 'User registered successfully. Please verify your email with the OTP sent.',
       needsEmailVerification: true,
-      emailSent,
+      emailSent: typeof emailSent === 'boolean' ? emailSent : false,
       user: {
         id: user._id,
         name: user.name,
@@ -341,7 +322,7 @@ router.post('/register', [
         email: user.email
       }
     };
-    if (!emailSent && process.env.EXPOSE_OTP === 'true' && process.env.DEFAULT_OTP) {
+    if ((typeof emailSent === 'boolean' && !emailSent) && process.env.EXPOSE_OTP === 'true' && process.env.DEFAULT_OTP) {
       responsePayload.dev_otp = otp;
     }
     return res.status(201).json(responsePayload);
@@ -493,13 +474,34 @@ router.post('/forgot-password', async (req, res) => {
     await user.save();
 
     // Try Email via SMTP first if configured
-    const emailSent = await sendPasswordResetEmail(user, otp);
-    if (emailSent) {
-      // Email sent successfully (awaited); never expose OTP in response
-      return res.status(200).json({ message: 'OTP sent to registered email', emailSent: true });
+    const smtpHost = process.env.SMTP_HOST;
+    const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
+    const smtpUser = process.env.SMTP_USER;
+    const smtpPass = process.env.SMTP_PASS;
+    const sanitizedSmtpUser = typeof smtpUser === 'string' ? smtpUser.trim() : smtpUser;
+    const sanitizedSmtpPass = typeof smtpPass === 'string'
+      ? smtpPass.replace(/\s+/g, '').trim()
+      : smtpPass;
+    const smtpFrom = process.env.SMTP_FROM || smtpUser;
+    if (smtpHost && smtpPort && sanitizedSmtpUser && sanitizedSmtpPass && sanitizedSmtpPass !== 'your_app_password' && user.email) {
+      try {
+        const transporter = buildSmtpTransporter(smtpHost, smtpPort, sanitizedSmtpUser, sanitizedSmtpPass);
+        const { html, text } = buildPickziOtpEmail({ name: user.name, otp });
+        await transporter.sendMail({
+          from: smtpFrom,
+          to: user.email,
+          subject: 'Pickzi password reset code',
+          text,
+          html
+        });
+        // Email sent successfully (awaited); never expose OTP in response
+        return res.status(200).json({ message: 'OTP sent to registered email', emailSent: true });
+      } catch (err) {
+        console.error('Error sending password reset email:', err);
+        // Graceful: inform client but keep same status/message contract, include flag
+        return res.status(200).json({ message: 'OTP sent to registered email', emailSent: false });
+      }
     }
-    // Graceful: inform client but keep same status/message contract, include flag
-    return res.status(200).json({ message: 'OTP sent to registered email', emailSent: false });
 
     // Else try SMS if Twilio is configured
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
@@ -1009,12 +1011,22 @@ router.post('/order-confirmation', async (req, res) => {
       return res.status(400).json({ message: 'Email is required to send confirmation.' });
     }
 
-    if (!isEmailServiceConfigured()) {
+    const smtpHost = process.env.SMTP_HOST;
+    const smtpPort = process.env.SMTP_PORT && Number(process.env.SMTP_PORT);
+    const smtpUser = process.env.SMTP_USER;
+    const smtpPass = process.env.SMTP_PASS;
+    const sanitizedUser = typeof smtpUser === 'string' ? smtpUser.trim() : smtpUser;
+    const sanitizedPass = typeof smtpPass === 'string' ? smtpPass.replace(/\s+/g, '').trim() : smtpPass;
+    const smtpFrom = process.env.SMTP_FROM || sanitizedUser;
+
+    if (!smtpHost || !smtpPort || !sanitizedUser || !sanitizedPass || sanitizedPass === 'your_app_password') {
       return res.status(200).json({
-        message: 'Confirmation email skipped: email service not configured.',
+        message: 'Confirmation email skipped: SMTP not configured.',
         sent: false,
       });
     }
+
+    const transporter = buildSmtpTransporter(smtpHost, smtpPort, sanitizedUser, sanitizedPass);
 
     const readableTotal = typeof total === 'number' ? total.toFixed(2) : total;
     const formattedItems = (Array.isArray(items) ? items : []).map((item, idx) => {
@@ -1075,15 +1087,15 @@ router.post('/order-confirmation', async (req, res) => {
       </div>
     `;
 
-    const emailSent = await sendPickziEmail({
+    const text = `Thank you for your order!\n\nOrder ID: ${orderId}\nTotal: $${readableTotal}\nPayment Method: ${paymentMethod}\n\nWe will ship your items soon.`;
+
+    await transporter.sendMail({
+      from: smtpFrom,
       to: email,
       subject: `Your Pickzi Order ${orderId ? `#${orderId}` : ''}`.trim(),
+      text,
       html,
     });
-
-    if (!emailSent) {
-      throw new Error('Brevo failed to deliver the confirmation email');
-    }
 
     return res.status(200).json({ message: 'Confirmation email sent', sent: true });
   } catch (err) {

@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import '../styles/Auth.css';
 import { useToast } from '../Components/Toast/ToastProvider';
-import { AuthAPI } from '../api/client';
 
 const API_BASE = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL)
   || (typeof process !== 'undefined' && process.env && process.env.REACT_APP_API_BASE_URL)
